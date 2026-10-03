@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
-from model_provider import ProviderConfig
+from model_provider import ProviderConfig, normalize_provider
 
 
 @dataclass
@@ -37,16 +38,59 @@ def load_config(base_dir: Path | None = None) -> LabConfig:
 
     root = (base_dir or Path(__file__).resolve().parent.parent).resolve()
 
-    # TODO: read env vars for one of the supported providers.
-    # Example knobs:
-    # - LLM_PROVIDER / LLM_MODEL
-    # - OPENAI_API_KEY
-    # - GEMINI_API_KEY
-    # - ANTHROPIC_API_KEY
-    # - OLLAMA_BASE_URL
-    # - OPENROUTER_API_KEY
-    # - CUSTOM_BASE_URL / CUSTOM_API_KEY
-    # TODO: create `root / "state"`.
-    # TODO: choose sensible defaults for compact memory.
+    # dotenv is deliberately optional: the deterministic offline path must work
+    # in a fresh Python environment with no API credentials at all.
+    try:
+        from dotenv import load_dotenv
 
-    raise NotImplementedError("Students should implement load_config().")
+        load_dotenv(root / ".env")
+    except ImportError:
+        pass
+
+    provider = normalize_provider(os.getenv("LLM_PROVIDER", "openai"))
+    model_name = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    temperature = float(os.getenv("LLM_TEMPERATURE", "0"))
+
+    provider_keys = {
+        "openai": os.getenv("OPENAI_API_KEY"),
+        "gemini": os.getenv("GEMINI_API_KEY"),
+        "anthropic": os.getenv("ANTHROPIC_API_KEY"),
+        "ollama": os.getenv("OLLAMA_API_KEY"),
+        "openrouter": os.getenv("OPENROUTER_API_KEY"),
+        "custom": os.getenv("CUSTOM_API_KEY"),
+    }
+    provider_urls = {
+        "custom": os.getenv("CUSTOM_BASE_URL"),
+        "ollama": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        "openrouter": os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+    }
+    model = ProviderConfig(
+        provider=provider,
+        model_name=model_name,
+        temperature=temperature,
+        api_key=provider_keys.get(provider),
+        base_url=provider_urls.get(provider),
+    )
+
+    judge_provider = normalize_provider(os.getenv("JUDGE_LLM_PROVIDER", provider))
+    judge_model = ProviderConfig(
+        provider=judge_provider,
+        model_name=os.getenv("JUDGE_LLM_MODEL", model_name),
+        temperature=0.0,
+        api_key=provider_keys.get(judge_provider),
+        base_url=provider_urls.get(judge_provider),
+    )
+
+    state_dir = root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return LabConfig(
+        base_dir=root,
+        data_dir=root / "data",
+        state_dir=state_dir,
+        # Normal conversations remain uncompressed, while the deliberately
+        # verbose 16-turn stress conversation compacts several times.
+        compact_threshold_tokens=int(os.getenv("COMPACT_THRESHOLD_TOKENS", "700")),
+        compact_keep_messages=int(os.getenv("COMPACT_KEEP_MESSAGES", "4")),
+        model=model,
+        judge_model=judge_model,
+    )
